@@ -1,0 +1,8 @@
+weights/
+result*
+*.mp4
+*.npy
+*.logs
+*.txt
+*.json
+*.csv
