@@ -27,7 +27,10 @@ def parse_args():
     parser.add_argument("--output", help="Path to output video file (optional)")
     parser.add_argument("--results_dir", type=str, default="results", 
                        help="Directory to save all output files")
-    
+    parser.add_argument("--start_frame", type=int, default=0,
+                       help="Start processing from this frame number")
+    parser.add_argument("--end_frame", type=int, default=2000,
+                       help="End processing at this frame number (0 for full video)")
     # Model settings
     parser.add_argument("--use_transreid", action="store_true", default=True,
                        help="Use TransReID for person tracking")
@@ -108,7 +111,9 @@ def main():
     video_processor = VideoProcessor(
         args.video,
         output_path=args.output if args.save_video else None,
-        headless=not args.display
+        headless=not args.display,
+        start_frame=args.start_frame if hasattr(args, 'start_frame') else 0,
+        end_frame=args.end_frame if hasattr(args, 'end_frame') else 2000,
     )
     
     print("Starting video processing...")

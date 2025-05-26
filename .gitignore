@@ -6,3 +6,6 @@ result*
 *.txt
 *.json
 *.csv
+*.png
+*.pth
+*.pkl

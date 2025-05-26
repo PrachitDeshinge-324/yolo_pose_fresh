@@ -1,9 +1,11 @@
 echo "Extracting database information..."
 python main.py \
-  --video "../Person_New/input/3c.mp4" \
-  --output "results3/3c.mp4" \
-  --results_dir "results3" \
+  --video "/content/drive/MyDrive/datasets/My Movie.mp4" \
+  --output "/content/drive/MyDrive/datasets/results3/3c.mp4" \
+  --results_dir "/content/drive/MyDrive/datasets/results3" \
   --save_bbox_info \
   --merge_ids \
   --use_transreid \
-  --save_video 
+  --save_video \
+  --start_frame 0 \
+  --end_frame 2000 
