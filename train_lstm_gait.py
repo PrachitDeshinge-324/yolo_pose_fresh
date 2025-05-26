@@ -556,12 +556,45 @@ class GaitTrainer:
                 data = data.to(self.device, non_blocking=(self.device.type == 'cuda'))
                 target = target.squeeze().to(self.device, non_blocking=(self.device.type == 'cuda'))
                 
+                # 🔥 Handle batch size issues similar to validation
+                if target.numel() == 0 or data.size(0) == 0:
+                    continue
+                    
+                # 🔥 Ensure target is 1D and matches batch size
+                if target.dim() == 0:
+                    target = target.unsqueeze(0)
+                
+                # 🔥 Check batch size consistency
+                if data.size(0) != target.size(0):
+                    print(f"Warning: Test batch size mismatch - data: {data.size(0)}, target: {target.size(0)}")
+                    min_size = min(data.size(0), target.size(0))
+                    data = data[:min_size]
+                    target = target[:min_size]
+                
+                if data.size(0) == 0:  # Skip if still empty after adjustment
+                    continue
+                
                 output, attention_weights = model(data)
                 _, predicted = torch.max(output.data, 1)
                 
-                all_predictions.extend(predicted.cpu().numpy())
-                all_targets.extend(target.cpu().numpy())
+                # 🔥 Convert to numpy and handle different tensor shapes
+                predicted_np = predicted.cpu().numpy()
+                target_np = target.cpu().numpy()
+                
+                # Ensure arrays are 1D
+                if predicted_np.ndim == 0:
+                    predicted_np = [predicted_np.item()]
+                if target_np.ndim == 0:
+                    target_np = [target_np.item()]
+                
+                all_predictions.extend(predicted_np)
+                all_targets.extend(target_np)
                 all_attention_weights.append(attention_weights.cpu().numpy())
+        
+        # Handle case where no test samples were processed
+        if len(all_targets) == 0:
+            print("No test samples were processed!")
+            return [], [], [], 0.0
         
         # Calculate metrics
         test_acc = accuracy_score(all_targets, all_predictions)
@@ -571,124 +604,166 @@ class GaitTrainer:
         
         # Get class names
         class_names = [f"Person_{self.label_encoder.inverse_transform([i])[0]}" 
-                      for i in range(len(self.label_encoder.classes_))]
+                    for i in range(len(self.label_encoder.classes_))]
         
         print(classification_report(all_targets, all_predictions, target_names=class_names))
         
         return all_predictions, all_targets, all_attention_weights, test_acc
-    
+
     def visualize_results(self, predictions, targets, attention_weights):
-        """Create visualization plots"""
+        """Create visualization plots with error handling"""
         print("Creating visualizations...")
+        
+        # Check if we have valid results
+        if len(targets) == 0 or len(predictions) == 0:
+            print("No valid test results to visualize!")
+            return
         
         # Set up the plotting area
         fig = plt.figure(figsize=(20, 15))
         
         # 1. Training curves
         plt.subplot(2, 3, 1)
-        plt.plot(self.train_losses, label='Train Loss', linewidth=2)
-        plt.plot(self.val_losses, label='Validation Loss', linewidth=2)
-        plt.title('Training and Validation Loss', fontsize=14, fontweight='bold')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        if self.train_losses and self.val_losses:
+            plt.plot(self.train_losses, label='Train Loss', linewidth=2)
+            plt.plot(self.val_losses, label='Validation Loss', linewidth=2)
+            plt.title('Training and Validation Loss', fontsize=14, fontweight='bold')
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+        else:
+            plt.text(0.5, 0.5, 'No training history available', ha='center', va='center')
+            plt.title('Training and Validation Loss')
         
         plt.subplot(2, 3, 2)
-        plt.plot(self.train_accuracies, label='Train Accuracy', linewidth=2)
-        plt.plot(self.val_accuracies, label='Validation Accuracy', linewidth=2)
-        plt.title('Training and Validation Accuracy', fontsize=14, fontweight='bold')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy (%)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        if self.train_accuracies and self.val_accuracies:
+            plt.plot(self.train_accuracies, label='Train Accuracy', linewidth=2)
+            plt.plot(self.val_accuracies, label='Validation Accuracy', linewidth=2)
+            plt.title('Training and Validation Accuracy', fontsize=14, fontweight='bold')
+            plt.xlabel('Epoch')
+            plt.ylabel('Accuracy (%)')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+        else:
+            plt.text(0.5, 0.5, 'No training history available', ha='center', va='center')
+            plt.title('Training and Validation Accuracy')
         
         # 2. Confusion Matrix
         plt.subplot(2, 3, 3)
-        cm = confusion_matrix(targets, predictions)
-        class_names = [f"P_{self.label_encoder.inverse_transform([i])[0]}" 
-                      for i in range(len(self.label_encoder.classes_))]
-        
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                   xticklabels=class_names, yticklabels=class_names)
-        plt.title('Confusion Matrix', fontsize=14, fontweight='bold')
-        plt.xlabel('Predicted')
-        plt.ylabel('Actual')
+        try:
+            cm = confusion_matrix(targets, predictions)
+            class_names = [f"P_{self.label_encoder.inverse_transform([i])[0]}" 
+                        for i in range(len(self.label_encoder.classes_))]
+            
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                    xticklabels=class_names, yticklabels=class_names)
+            plt.title('Confusion Matrix', fontsize=14, fontweight='bold')
+            plt.xlabel('Predicted')
+            plt.ylabel('Actual')
+        except Exception as e:
+            plt.text(0.5, 0.5, f'Error creating confusion matrix: {str(e)}', ha='center', va='center')
+            plt.title('Confusion Matrix')
         
         # 3. Class-wise accuracy
         plt.subplot(2, 3, 4)
-        class_accuracies = []
-        for i in range(len(class_names)):
-            mask = np.array(targets) == i
-            if mask.sum() > 0:
-                acc = (np.array(predictions)[mask] == i).mean()
-                class_accuracies.append(acc)
-            else:
-                class_accuracies.append(0)
-        
-        bars = plt.bar(class_names, class_accuracies, color=sns.color_palette("husl", len(class_names)))
-        plt.title('Per-Class Accuracy', fontsize=14, fontweight='bold')
-        plt.xlabel('Person')
-        plt.ylabel('Accuracy')
-        plt.xticks(rotation=45)
-        
-        # Add value labels on bars
-        for bar, acc in zip(bars, class_accuracies):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                    f'{acc:.2f}', ha='center', va='bottom')
+        try:
+            class_names = [f"P_{self.label_encoder.inverse_transform([i])[0]}" 
+                        for i in range(len(self.label_encoder.classes_))]
+            class_accuracies = []
+            for i in range(len(class_names)):
+                mask = np.array(targets) == i
+                if mask.sum() > 0:
+                    acc = (np.array(predictions)[mask] == i).mean()
+                    class_accuracies.append(acc)
+                else:
+                    class_accuracies.append(0)
+            
+            bars = plt.bar(class_names, class_accuracies, color=sns.color_palette("husl", len(class_names)))
+            plt.title('Per-Class Accuracy', fontsize=14, fontweight='bold')
+            plt.xlabel('Person')
+            plt.ylabel('Accuracy')
+            plt.xticks(rotation=45)
+            
+            # Add value labels on bars
+            for bar, acc in zip(bars, class_accuracies):
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                        f'{acc:.2f}', ha='center', va='bottom')
+        except Exception as e:
+            plt.text(0.5, 0.5, f'Error creating class accuracy plot: {str(e)}', ha='center', va='center')
+            plt.title('Per-Class Accuracy')
         
         # 4. Attention weights visualization
         plt.subplot(2, 3, 5)
-        if attention_weights:
-            # Average attention weights across all samples
-            avg_attention = np.mean(np.concatenate(attention_weights, axis=0), axis=0)
-            plt.plot(avg_attention.squeeze(), linewidth=2)
-            plt.title('Average Attention Weights Over Time', fontsize=14, fontweight='bold')
-            plt.xlabel('Time Step')
-            plt.ylabel('Attention Weight')
-            plt.grid(True, alpha=0.3)
+        try:
+            if attention_weights and len(attention_weights) > 0:
+                # Average attention weights across all samples
+                avg_attention = np.mean(np.concatenate(attention_weights, axis=0), axis=0)
+                plt.plot(avg_attention.squeeze(), linewidth=2)
+                plt.title('Average Attention Weights Over Time', fontsize=14, fontweight='bold')
+                plt.xlabel('Time Step')
+                plt.ylabel('Attention Weight')
+                plt.grid(True, alpha=0.3)
+            else:
+                plt.text(0.5, 0.5, 'No attention weights available', ha='center', va='center')
+                plt.title('Average Attention Weights Over Time')
+        except Exception as e:
+            plt.text(0.5, 0.5, f'Error creating attention plot: {str(e)}', ha='center', va='center')
+            plt.title('Average Attention Weights Over Time')
         
         # 5. Model performance summary with device info
         plt.subplot(2, 3, 6)
         plt.axis('off')
         
-        # Calculate summary statistics
-        final_train_acc = self.train_accuracies[-1] if self.train_accuracies else 0
-        final_val_acc = self.val_accuracies[-1] if self.val_accuracies else 0
-        test_acc = accuracy_score(targets, predictions)
-        
-        summary_text = f"""
-        Model Performance Summary
-        
-        Final Training Accuracy: {final_train_acc:.2f}%
-        Final Validation Accuracy: {final_val_acc:.2f}%
-        Test Accuracy: {test_acc:.2f}%
-        
-        Number of Classes: {len(class_names)}
-        Total Test Samples: {len(targets)}
-        
-        Model Configuration:
-        - Sequence Length: {self.config['sequence_length']}
-        - Hidden Size: {self.config['hidden_size']}
-        - Number of Layers: {self.config['num_layers']}
-        - Dropout: {self.config['dropout']}
-        
-        Training Device: {self.device.type.upper()}
-        """
-        
-        plt.text(0.1, 0.5, summary_text, fontsize=12, verticalalignment='center',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5))
+        try:
+            # Calculate summary statistics
+            final_train_acc = self.train_accuracies[-1] if self.train_accuracies else 0
+            final_val_acc = self.val_accuracies[-1] if self.val_accuracies else 0
+            test_acc = accuracy_score(targets, predictions) if len(targets) > 0 else 0
+            
+            summary_text = f"""
+            Model Performance Summary
+            
+            Final Training Accuracy: {final_train_acc:.2f}%
+            Final Validation Accuracy: {final_val_acc:.2f}%
+            Test Accuracy: {test_acc:.2f}%
+            
+            Number of Classes: {len(self.label_encoder.classes_)}
+            Total Test Samples: {len(targets)}
+            
+            Model Configuration:
+            - Sequence Length: {self.config['sequence_length']}
+            - Hidden Size: {self.config['hidden_size']}
+            - Number of Layers: {self.config['num_layers']}
+            - Dropout: {self.config['dropout']}
+            
+            Training Device: {self.device.type.upper()}
+            """
+            
+            plt.text(0.1, 0.5, summary_text, fontsize=12, verticalalignment='center',
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5))
+        except Exception as e:
+            plt.text(0.5, 0.5, f'Error creating summary: {str(e)}', ha='center', va='center')
         
         plt.tight_layout()
         
         # Save the plot
-        plt.savefig(os.path.join(self.config['output_dir'], 'training_results.png'), 
-                   dpi=300, bbox_inches='tight')
+        try:
+            plt.savefig(os.path.join(self.config['output_dir'], 'training_results.png'), 
+                    dpi=300, bbox_inches='tight')
+            print(f"✓ Saved training results plot to {self.config['output_dir']}/training_results.png")
+        except Exception as e:
+            print(f"Error saving plot: {e}")
+        
         plt.show()
         
-        # Create additional detailed plots
-        self._create_detailed_plots(predictions, targets, attention_weights)
-    
+        # Create additional detailed plots only if we have valid data
+        if len(targets) > 0 and len(predictions) > 0:
+            try:
+                self._create_detailed_plots(predictions, targets, attention_weights)
+            except Exception as e:
+                print(f"Error creating detailed plots: {e}")
+
     def _create_detailed_plots(self, predictions, targets, attention_weights):
         """Create additional detailed visualization plots"""
         
