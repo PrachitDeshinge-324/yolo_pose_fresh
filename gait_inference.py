@@ -35,6 +35,10 @@ class GaitInference:
         # Load trained model and configuration
         self.load_model(model_path, config_path)
         
+        # 🚨 CRITICAL: Initialize gait feature extractor for 41-feature extraction
+        from utils.skeleton_gait import NormalizedGaitFeatureExtractor
+        self.gait_extractor = NormalizedGaitFeatureExtractor()
+        
         # Initialize feature buffers for each track
         self.track_features = defaultdict(lambda: deque(maxlen=sequence_length))
         self.track_predictions = defaultdict(list)
@@ -48,88 +52,112 @@ class GaitInference:
         print(f"   Device: {self.device}")
         print(f"   Sequence length: {self.sequence_length}")
         print(f"   Model classes: {self.class_names}")
+        print(f"   🔧 Gait feature extractor initialized for 41-feature extraction")
     
     def load_model(self, model_path, config_path):
-        """Load trained LSTM model and configuration with automatic dimension detection"""
+        """Load the trained model and configuration"""
         print(f"Loading model from {model_path}...")
         
-        # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
+        # Load checkpoint with proper error handling
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            raise
         
-        # Load model checkpoint
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Extract model parameters
-        model_config = checkpoint.get('config', self.config)
-        
-        # 🔥 Automatically detect input size and number of classes from checkpoint
-        state_dict = checkpoint['model_state_dict']
-        
-        # Get input size from LSTM weight shape
-        lstm_weight_shape = state_dict['lstm.weight_ih_l0'].shape
-        input_size = lstm_weight_shape[1]  # [hidden_size*4, input_size]
-        
-        # Get number of classes from final layer shape
-        fc2_weight_shape = state_dict['fc2.weight'].shape
-        num_classes = fc2_weight_shape[0]  # [num_classes, hidden_size]
-        
-        print(f"🔍 Detected model dimensions:")
-        print(f"   Input size: {input_size}")
-        print(f"   Number of classes: {num_classes}")
-        
-        # Load label encoder classes if available
-        if os.path.exists(os.path.join(os.path.dirname(model_path), 'training_results.pkl')):
-            with open(os.path.join(os.path.dirname(model_path), 'training_results.pkl'), 'rb') as f:
-                training_results = pickle.load(f)
-                self.label_encoder_classes = training_results['label_encoder_classes']
+        # Get model configuration from checkpoint (not external config)
+        if 'config' in checkpoint:
+            model_config = checkpoint['config']
+            self.sequence_length = model_config['sequence_length']
+            hidden_size = model_config['hidden_size']
+            num_layers = model_config['num_layers']
+            dropout = model_config['dropout']
+            
+            # Get number of classes from saved model state
+            fc3_weight_shape = checkpoint['model_state_dict']['fc3.weight'].shape
+            num_classes = fc3_weight_shape[0]  # First dimension is num_classes
+            
+            # Get input size from model state
+            input_norm_weight_shape = checkpoint['model_state_dict']['input_norm.weight'].shape
+            input_size = input_norm_weight_shape[0]  # Feature dimension
+            self.input_size = input_size  # ADD THIS LINE
+            
+            print(f"🔍 Detected model dimensions:")
+            print(f"   Input size: {input_size}")
+            print(f"   Number of classes: {num_classes}")
+            print(f"   Hidden size: {hidden_size}")
+            print(f"   Sequence length: {self.sequence_length}")
+            
         else:
-            # Fallback - create sequential class names
-            self.label_encoder_classes = list(range(num_classes))
+            # Fallback: try to infer from model state dict
+            fc3_weight_shape = checkpoint['model_state_dict']['fc3.weight'].shape
+            num_classes = fc3_weight_shape[0]
+            input_norm_weight_shape = checkpoint['model_state_dict']['input_norm.weight'].shape
+            input_size = input_norm_weight_shape[0]
+            self.input_size = input_size  # ADD THIS LINE TOO
+            
+            # Use default values
+            hidden_size = 64
+            num_layers = 2
+            dropout = 0.2
+            
+            print(f"⚠️  Using inferred dimensions:")
+            print(f"   Input size: {input_size}")
+            print(f"   Number of classes: {num_classes}")
         
-        # Create class names
-        self.class_names = [f"Person_{class_id}" for class_id in self.label_encoder_classes]
-        
-        # Store dimensions for feature processing
-        self.input_size = input_size
-        self.num_classes = num_classes
-        
-        # Create and load model with correct dimensions
+        # Create model with correct dimensions
+        from train_lstm_gait import BidirectionalLSTM
         self.model = BidirectionalLSTM(
             input_size=input_size,
-            hidden_size=model_config.get('hidden_size', 64),
-            num_layers=model_config.get('num_layers', 2),
+            hidden_size=hidden_size,
+            num_layers=num_layers,
             num_classes=num_classes,
-            dropout=model_config.get('dropout', 0.3)
-        )
+            dropout=dropout
+        ).to(self.device)
         
+        # Load model weights
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.model = self.model.to(self.device)
         self.model.eval()
         
-        # Load feature scaler if available
+        # Load label encoder
+        if 'label_encoder' in checkpoint:
+            self.label_encoder = checkpoint['label_encoder']
+            # Create class names from label encoder
+            self.class_names = [f"Person_{track_id}" for track_id in self.label_encoder.classes_]
+            print(f"✓ Loaded label encoder with classes: {self.label_encoder.classes_}")
+        else:
+            print("⚠️  No label encoder found in checkpoint")
+            self.label_encoder = None
+            # Create default class names
+            self.class_names = [f"Person_{i+1}" for i in range(num_classes)]
+
+        # Load feature scaler
         scaler_path = os.path.join(os.path.dirname(model_path), 'feature_scaler.pkl')
         if os.path.exists(scaler_path):
-            with open(scaler_path, 'rb') as f:
-                self.scaler = pickle.load(f)
-            print(f"✅ Feature scaler loaded")
+            import joblib
+            self.scaler = joblib.load(scaler_path)
+            print(f"✓ Loaded feature scaler from {scaler_path}")
         else:
-            print("⚠️  Feature scaler not found. Will attempt to use raw features.")
+            print(f"⚠️  Feature scaler not found at {scaler_path}")
             self.scaler = None
         
-        print(f"✅ Model loaded successfully")
-        print(f"   Input size: {input_size}")
-        print(f"   Hidden size: {model_config.get('hidden_size', 64)}")
-        print(f"   Number of classes: {num_classes}")
-        print(f"   Class names: {self.class_names}")
-    
-    def update_track_features(self, track_id, features_dict):
-        """Update feature buffer for a track"""
+        print(f"✓ Model loaded successfully!")
+        return True
+
+    def update_track_features(self, track_id, features_dict, keypoints=None, frame_idx=None):
+        """Update feature buffer for a track with comprehensive gait features"""
         if not features_dict:
             return
         
-        # Convert features dict to feature vector (same order as training)
-        feature_vector = self.dict_to_vector(features_dict)
+        # 🚨 CRITICAL: If we have keypoints, update the gait extractor first
+        if keypoints is not None and frame_idx is not None:
+            self.update_track_keypoints(track_id, keypoints, frame_idx)
+        
+        # Extract comprehensive features (41 features total)
+        comprehensive_features = self.extract_comprehensive_features(track_id, features_dict)
+        
+        # Convert to feature vector (same order as training)
+        feature_vector = self.dict_to_vector(comprehensive_features)
         
         if feature_vector is not None:
             # Add to buffer
@@ -142,62 +170,79 @@ class GaitInference:
                 self.track_states[track_id] = 'ready'
     
     def dict_to_vector(self, features_dict):
-        """Convert features dictionary to vector with correct size"""
+        """Convert features dictionary to vector with correct size - FIXED for 41 features"""
         try:
-            # Get all numeric features from the dictionary
-            feature_vector = []
+            # 🚨 CRITICAL: This must match the exact feature order used in training!
+            # Based on analysis of 1c_frame_features.csv, we need exactly these 41 features in order
             
-            # Define feature extraction order (based on your training data)
-            basic_features = [
+            # Define the EXACT 41 features used in training (from actual CSV header, excluding metadata columns)
+            expected_features = [
                 'frame_center_x', 'frame_center_y', 'frame_width', 'frame_height',
-                'frame_body_height', 'num_valid_keypoints', 'left_knee_angle', 
-                'right_knee_angle', 'frame_avg_displacement', 'frame_max_displacement',
-                'frame_displacement_std'
+                'frame_body_height', 'num_valid_keypoints', 'left_knee_angle', 'right_knee_angle',
+                'frame_avg_displacement', 'frame_max_displacement', 'frame_displacement_std',
+                # NOTE: 'interpolated' column was excluded during training as metadata
+                'norm_norm_ratio_neck_to_right_shoulder_to_shoulder',
+                'norm_norm_ratio_neck_to_left_shoulder_to_shoulder',
+                'norm_norm_ratio_right_shoulder_to_right_elbow_to_shoulder',
+                'norm_norm_ratio_right_elbow_to_right_wrist_to_shoulder',
+                'norm_norm_ratio_left_shoulder_to_left_elbow_to_shoulder',
+                'norm_norm_ratio_left_elbow_to_left_wrist_to_shoulder',
+                'norm_norm_ratio_right_hip_to_right_knee_to_shoulder',
+                'norm_norm_ratio_right_knee_to_right_ankle_to_shoulder',
+                'norm_norm_ratio_left_hip_to_left_knee_to_shoulder',
+                'norm_norm_ratio_left_knee_to_left_ankle_to_shoulder',
+                'norm_norm_arm_symmetry_upper',
+                'norm_norm_arm_symmetry_lower',
+                'norm_norm_leg_symmetry_upper',
+                'norm_norm_leg_symmetry_lower',
+                'norm_norm_avg_right_elbow_angle',
+                'norm_norm_std_right_elbow_angle',
+                'norm_norm_range_right_elbow_angle',
+                'norm_norm_avg_left_elbow_angle',
+                'norm_norm_std_left_elbow_angle',
+                'norm_norm_range_left_elbow_angle',
+                'norm_norm_avg_right_knee_angle',
+                'norm_norm_std_right_knee_angle',
+                'norm_norm_range_right_knee_angle',
+                'norm_norm_avg_left_knee_angle',
+                'norm_norm_std_left_knee_angle',
+                'norm_norm_range_left_knee_angle',
+                'norm_norm_movement_mean',
+                'norm_norm_movement_std',
+                'norm_norm_movement_max',
+                'norm_norm_movement_rhythm'
             ]
             
-            # Extract basic features
-            for feat_name in basic_features:
-                feature_vector.append(features_dict.get(feat_name, 0.0))
+            # Ensure we have exactly 41 features (matching the trained model)
+            assert len(expected_features) == 41, f"Expected 41 features, got {len(expected_features)}"
             
-            # Add normalized features
-            for key, value in features_dict.items():
-                if key.startswith('norm_'):
-                    if isinstance(value, (int, float)):
+            # Extract features in the exact order
+            feature_vector = []
+            missing_features = []
+            
+            for feat_name in expected_features:
+                if feat_name in features_dict:
+                    value = features_dict[feat_name]
+                    if isinstance(value, (int, float)) and not np.isnan(value):
                         feature_vector.append(float(value))
-                    elif isinstance(value, (list, np.ndarray)) and len(value) > 0:
-                        feature_vector.append(float(np.mean(value)))
                     else:
                         feature_vector.append(0.0)
+                        missing_features.append(feat_name)
+                else:
+                    feature_vector.append(0.0)
+                    missing_features.append(feat_name)
             
-            # Add invariant features
-            for key, value in features_dict.items():
-                if key.startswith('inv_'):
-                    if isinstance(value, (int, float)):
-                        feature_vector.append(float(value))
-                    elif isinstance(value, (list, np.ndarray)) and len(value) > 0:
-                        feature_vector.append(float(np.mean(value)))
-                    else:
-                        feature_vector.append(0.0)
+            if missing_features and len(missing_features) > 20:  # Only warn if many features missing
+                print(f"⚠️  Missing {len(missing_features)}/{len(expected_features)} features: {missing_features[:5]}...")
             
-            # Add any other numeric features not already included
-            excluded_keys = set(basic_features + [k for k in features_dict.keys() 
-                                                if k.startswith('norm_') or k.startswith('inv_')])
-            
-            for key, value in features_dict.items():
-                if key not in excluded_keys:
-                    if isinstance(value, (int, float)):
-                        feature_vector.append(float(value))
-                    elif isinstance(value, (list, np.ndarray)) and len(value) > 0:
-                        feature_vector.append(float(np.mean(value)))
-            
-            # 🔥 Adjust to the exact input size expected by the model
-            if len(feature_vector) > self.input_size:
-                # Truncate if too many features
-                feature_vector = feature_vector[:self.input_size]
-            elif len(feature_vector) < self.input_size:
-                # Pad with zeros if too few features
-                padding_needed = self.input_size - len(feature_vector)
-                feature_vector.extend([0.0] * padding_needed)
+            # Ensure exactly 41 features (matching trained model)
+            if len(feature_vector) != 41:
+                print(f"🚨 CRITICAL: Feature vector has {len(feature_vector)} features, expected 41!")
+                # Pad or truncate to 41
+                if len(feature_vector) > 41:
+                    feature_vector = feature_vector[:41]
+                else:
+                    feature_vector.extend([0.0] * (41 - len(feature_vector)))
             
             return np.array(feature_vector, dtype=np.float32)
             
@@ -221,6 +266,15 @@ class GaitInference:
             else:
                 print(f"  {i:2d}. {key}: {type(value).__name__}")
         print()
+    
+    def log_available_features(self, features_dict):
+        """Log all available feature names for debugging"""
+        if features_dict:
+            print(f"\n🔍 DEBUG: Generated feature names:")
+            feature_names = sorted(features_dict.keys())
+            for i, name in enumerate(feature_names):
+                print(f"  {i:2d}. '{name}'")
+            print(f"Total: {len(feature_names)} features\n")
     
     def predict_identity(self, track_id):
         """Predict identity for a track with sufficient features"""
@@ -301,6 +355,79 @@ class GaitInference:
         else:
             # Inconsistent predictions
             return None, 0.0, "inconsistent"
+    
+    def update_track_keypoints(self, track_id, keypoints, frame_idx):
+        """Update keypoints for gait feature extraction"""
+        if keypoints is not None and len(keypoints) > 0:
+            # Update the gait extractor with raw keypoints
+            self.gait_extractor.update_track(track_id, keypoints, frame_idx)
+    
+    def extract_comprehensive_features(self, track_id, basic_features):
+        """Extract comprehensive 42-feature gait features for a track"""
+        try:
+            # Get normalized gait features from the extractor
+            gait_features = self.gait_extractor.get_features(track_id)
+            
+            # Start with basic frame features (first 12 features)
+            comprehensive_features = {}
+            
+            # Add basic features (frame-level features)
+            if basic_features:
+                comprehensive_features.update(basic_features)
+            
+            # 🚨 CRITICAL FIX: Generate exactly the 30 norm_norm_ features needed
+            # Map gait extractor features (norm_*) to training data names (norm_norm_*)
+            if gait_features:
+                # Define the exact mapping from extractor features to training features
+                feature_mapping = {
+                    'norm_ratio_neck_to_right_shoulder_to_shoulder': 'norm_norm_ratio_neck_to_right_shoulder_to_shoulder',
+                    'norm_ratio_neck_to_left_shoulder_to_shoulder': 'norm_norm_ratio_neck_to_left_shoulder_to_shoulder',
+                    'norm_ratio_right_shoulder_to_right_elbow_to_shoulder': 'norm_norm_ratio_right_shoulder_to_right_elbow_to_shoulder',
+                    'norm_ratio_right_elbow_to_right_wrist_to_shoulder': 'norm_norm_ratio_right_elbow_to_right_wrist_to_shoulder',
+                    'norm_ratio_left_shoulder_to_left_elbow_to_shoulder': 'norm_norm_ratio_left_shoulder_to_left_elbow_to_shoulder',
+                    'norm_ratio_left_elbow_to_left_wrist_to_shoulder': 'norm_norm_ratio_left_elbow_to_left_wrist_to_shoulder',
+                    'norm_ratio_right_hip_to_right_knee_to_shoulder': 'norm_norm_ratio_right_hip_to_right_knee_to_shoulder',
+                    'norm_ratio_right_knee_to_right_ankle_to_shoulder': 'norm_norm_ratio_right_knee_to_right_ankle_to_shoulder',
+                    'norm_ratio_left_hip_to_left_knee_to_shoulder': 'norm_norm_ratio_left_hip_to_left_knee_to_shoulder',
+                    'norm_ratio_left_knee_to_left_ankle_to_shoulder': 'norm_norm_ratio_left_knee_to_left_ankle_to_shoulder',
+                    'norm_arm_symmetry_upper': 'norm_norm_arm_symmetry_upper',
+                    'norm_arm_symmetry_lower': 'norm_norm_arm_symmetry_lower',
+                    'norm_leg_symmetry_upper': 'norm_norm_leg_symmetry_upper',
+                    'norm_leg_symmetry_lower': 'norm_norm_leg_symmetry_lower',
+                    'norm_avg_right_elbow_angle': 'norm_norm_avg_right_elbow_angle',
+                    'norm_std_right_elbow_angle': 'norm_norm_std_right_elbow_angle',
+                    'norm_range_right_elbow_angle': 'norm_norm_range_right_elbow_angle',
+                    'norm_avg_left_elbow_angle': 'norm_norm_avg_left_elbow_angle',
+                    'norm_std_left_elbow_angle': 'norm_norm_std_left_elbow_angle',
+                    'norm_range_left_elbow_angle': 'norm_norm_range_left_elbow_angle',
+                    'norm_avg_right_knee_angle': 'norm_norm_avg_right_knee_angle',
+                    'norm_std_right_knee_angle': 'norm_norm_std_right_knee_angle',
+                    'norm_range_right_knee_angle': 'norm_norm_range_right_knee_angle',
+                    'norm_avg_left_knee_angle': 'norm_norm_avg_left_knee_angle',
+                    'norm_std_left_knee_angle': 'norm_norm_std_left_knee_angle',
+                    'norm_range_left_knee_angle': 'norm_norm_range_left_knee_angle',
+                    'norm_movement_mean': 'norm_norm_movement_mean',
+                    'norm_movement_std': 'norm_norm_movement_std',
+                    'norm_movement_max': 'norm_norm_movement_max',
+                    'norm_movement_rhythm': 'norm_norm_movement_rhythm'
+                }
+                
+                # Apply the mapping
+                for extractor_name, training_name in feature_mapping.items():
+                    if extractor_name in gait_features:
+                        comprehensive_features[training_name] = gait_features[extractor_name]
+            
+            # Debug: Show what features we have
+            norm_norm_count = len([k for k in comprehensive_features.keys() if k.startswith('norm_norm_')])
+            basic_count = len([k for k in comprehensive_features.keys() if not k.startswith('norm_norm_')])
+            
+            print(f"📊 Track {track_id} features: {basic_count} basic, {norm_norm_count} norm_norm_ = {len(comprehensive_features)} total")
+            
+            return comprehensive_features
+            
+        except Exception as e:
+            print(f"Error extracting comprehensive features for track {track_id}: {e}")
+            return basic_features if basic_features else {}
 
 def parse_args():
     """Parse command line arguments"""
@@ -533,15 +660,20 @@ def main():
                     if debug_frame:
                         print(f"    ✅ Pose: {len(pose_results)} results")
                     
-                    # Calculate features
+                    # 🚨 CRITICAL: Extract keypoints for gait feature extraction
+                    keypoints = None
+                    if pose_results and len(pose_results) > 0:
+                        keypoints = pose_results[0].get('keypoints')  # Get first pose result's keypoints
+                    
+                    # Calculate basic frame features
                     features_dict = pose_analyzer.calculate_frame_features(track_id, frame_count)
                     
                     if features_dict:
                         if debug_frame:
-                            print(f"    ✅ Features: {len(features_dict)} extracted")
+                            print(f"    ✅ Basic features: {len(features_dict)} extracted")
                         
-                        # Update inference system
-                        gait_inference.update_track_features(track_id, features_dict)
+                        # 🚨 CRITICAL: Update inference system with keypoints for comprehensive feature extraction
+                        gait_inference.update_track_features(track_id, features_dict, keypoints, frame_count)
                         
                         # Check track status
                         state, progress = gait_inference.get_track_status(track_id)

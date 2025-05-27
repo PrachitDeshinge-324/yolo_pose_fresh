@@ -4,8 +4,8 @@
 echo "=== Training Bidirectional LSTM for Gait Recognition (Mac Optimized) ==="
 
 # Set parameters optimized for Mac and small datasets
-CSV_FILE="/content/drive/MyDrive/datasets/results3/3c_frame_features.csv"  # Your CSV file
-OUTPUT_DIR="/content/drive/MyDrive/datasets/results3/lstm_gait_results"
+CSV_FILE="results1c/1c_frame_features.csv"  # Your CSV file
+OUTPUT_DIR="results1c/lstm_gait_results"
 SEQUENCE_LENGTH=20  # Reduced to create more sequences
 HIDDEN_SIZE=64      # Smaller model to prevent overfitting
 NUM_EPOCHS=30       # Fewer epochs for small datasets

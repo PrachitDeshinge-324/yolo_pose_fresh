@@ -4,10 +4,10 @@
 echo "=== Real-time Gait Recognition Inference ==="
 
 # Set parameters
-VIDEO_FILE="../Person_New/input/3c1.mp4"
-MODEL_FILE="lstm_gait_results/best_model.pth"
-OUTPUT_VIDEO="inference_results/identified_gait.mp4"
-RESULTS_DIR="inference_results"
+VIDEO_FILE="../Person_New/input/1c.mp4"
+MODEL_FILE="results1c/lstm_gait_results/best_model.pth"
+OUTPUT_VIDEO="results1c/inference_results/identified_gait.mp4"
+RESULTS_DIR="results1c/inference_results"
 
 # Create results directory
 mkdir -p $RESULTS_DIR
@@ -22,8 +22,8 @@ python gait_inference.py \
     --output $OUTPUT_VIDEO \
     --results_dir $RESULTS_DIR \
     --sequence_length 20 \
-    --min_confidence 0.7 \
-    --min_predictions 3 \
+    --min_confidence 0.4 \
+    --min_predictions 2 \
     --display \
     --save_video
     # 🔥 Removed --use_transreid flag (defaults to False now)

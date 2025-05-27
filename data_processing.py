@@ -483,6 +483,26 @@ class DataProcessor:
         aggregated_data = []
         track_ids = []
         
+        # First pass: determine the maximum feature vector length
+        max_features = 0
+        feature_names = set()
+        
+        for track_id in sorted(self.frame_features.keys()):
+            if track_id > 0:
+                features_list = self.frame_features[track_id]
+                if not features_list:
+                    continue
+                
+                # Collect all feature names
+                for frame_idx, features_dict in features_list:
+                    feature_names.update(features_dict.keys())
+        
+        # Convert to sorted list for consistent ordering
+        feature_names = sorted([name for name in feature_names if name != 'interpolated'])
+        max_features = len(feature_names)
+        
+        print(f"Found {max_features} unique feature types: {feature_names[:5]}...")  # Show first 5
+        
         for track_id in sorted(self.frame_features.keys()):
             if track_id > 0:
                 features_list = self.frame_features[track_id]
@@ -495,20 +515,25 @@ class DataProcessor:
                 
                 for frame_idx, features_dict in features_list:
                     for feature_name, feature_value in features_dict.items():
-                        if isinstance(feature_value, (int, float)):
+                        if feature_name != 'interpolated' and isinstance(feature_value, (int, float)):
                             all_feature_values[feature_name].append(feature_value)
                 
-                # Calculate mean values for similarity
+                # Calculate mean values for similarity - ensure consistent ordering
                 aggregated_vector = []
-                for feature_name in sorted(all_feature_values.keys()):
-                    values = all_feature_values[feature_name]
+                for feature_name in feature_names:
+                    values = all_feature_values.get(feature_name, [])
                     if values:
                         mean_value = np.mean(values)
-                        aggregated_vector.append(mean_value)
+                    else:
+                        mean_value = 0.0  # Default value for missing features
+                    aggregated_vector.append(mean_value)
                 
-                if aggregated_vector:
+                # Ensure all vectors have the same length
+                if len(aggregated_vector) == max_features:
                     aggregated_data.append(aggregated_vector)
                     track_ids.append(track_id)
+                else:
+                    print(f"Warning: Track {track_id} has {len(aggregated_vector)} features, expected {max_features}")
         
         # Save aggregated features for similarity
         if aggregated_data:
@@ -522,10 +547,12 @@ class DataProcessor:
                 json.dump(track_ids, f)
             
             print(f"Created similarity features: {similarity_array.shape}")
+            print(f"Tracks processed: {track_ids}")
             return similarity_path
-        
-        return None
-    
+        else:
+            print("No valid aggregated data to save")
+            return None
+
     def merge_ids(self, args, temp_paths):
         """Interactive session to merge incorrectly split tracking IDs"""
         print("\n=== Starting ID Merger ===")
