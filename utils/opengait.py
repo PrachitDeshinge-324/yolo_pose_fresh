@@ -272,8 +272,3 @@ class OpenGaitEmbedder:
             frame_features = F.normalize(frame_features, p=2, dim=1)
             
         return frame_features.cpu().numpy()
-
-# Usage example:
-# embedder = OpenGaitEmbedder()
-# embedding = embedder.extract(list_of_silhouette_images)
-# sequence_features = embedder.extract_sequence_features(list_of_silhouette_images)
