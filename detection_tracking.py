@@ -19,7 +19,7 @@ logging.getLogger("ultralytics").setLevel(logging.ERROR)
 class TransReIDTracker:
     """TransReID-based person tracker with robust re-identification"""
     
-    def __init__(self, device='cpu', reid_model_path='weights/transreid_vitbase.pth', 
+    def __init__(self, device='cpu', reid_model_path='weights/vit_small_cfs_lup.pth', 
                  iou_threshold=0.5, conf_threshold=0.5, max_age=30):
         self.device = device
         self.iou_threshold = iou_threshold

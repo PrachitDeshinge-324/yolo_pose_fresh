@@ -135,8 +135,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Enhanced Gait Analysis with OpenGait Features")
     
     # Input/Output
-    parser.add_argument("--video", help="Path to input video file")
-    parser.add_argument("--output", help="Path to output video file (optional)")
+    parser.add_argument("--video",default="../Person_New/input/3c.mp4" , help="Path to input video file")
+    parser.add_argument("--output",default="results/3c.mp4", help="Path to output video file (optional)")
     parser.add_argument("--results_dir", type=str, default="results", 
                        help="Directory to save all output files")
     parser.add_argument("--start_frame", type=int, default=0,
@@ -173,13 +173,13 @@ def parse_args():
                        help="Save bounding box information to JSON")
     
     # Post-processing
-    parser.add_argument("--merge_ids", action="store_true", default=False,
+    parser.add_argument("--merge_ids", action="store_true", default=True,
                        help="Run interactive ID merging after processing")
     
     # Display options
-    parser.add_argument("--display", action="store_true", default=False,
+    parser.add_argument("--display", action="store_true", default=True,
                        help="Display video during processing")
-    parser.add_argument("--save_video", action="store_true", default=False,
+    parser.add_argument("--save_video", action="store_true", default=True,
                        help="Save processed video with visualizations")
     
     return parser.parse_args()
@@ -283,8 +283,8 @@ def main():
                 # Calculate traditional pose features
                 features_dict = pose_analyzer.calculate_frame_features(track_id, frame_count)
                 
-                if features_dict:
-                    data_processor.store_frame_features(track_id, frame_count, features_dict)
+                # if features_dict:
+                #     data_processor.store_frame_features(track_id, frame_count, features_dict)
             
             # 2b. Extract silhouette and add to sequence
             silhouette = silhouette_extractor.extract_person_silhouette(

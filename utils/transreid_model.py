@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
+from model.backbones.vit_pytorch import vit_base_patch16_224_TransReID
 from PIL import Image
 import os
 from functools import lru_cache
@@ -14,6 +15,74 @@ def get_best_device():
         return "mps"
     else:
         return "cpu"
+
+def interpolate_pos_embed_rectangular(model, state_dict):
+    """
+    Interpolate position embeddings from checkpoint to model when grids don't match,
+    properly handling rectangular (non-square) grid layouts.
+    """
+    if 'pos_embed' in state_dict:
+        pos_embed_checkpoint = state_dict['pos_embed']
+        embedding_size = pos_embed_checkpoint.shape[-1]
+        
+        # Get grid sizes from model
+        model_grid_size = (model.patch_embed.num_y, model.patch_embed.num_x)
+        model_num_patches = model_grid_size[0] * model_grid_size[1]
+        
+        # Get grid size from checkpoint
+        checkpoint_num_patches = pos_embed_checkpoint.shape[1] - 1  # minus cls token
+        
+        # Estimate checkpoint grid size (try to get close to original aspect ratio)
+        # For TransReID, most common is 24x10 grid (240 patches) or 24×9 (216 patches)
+        if checkpoint_num_patches in [210, 240, 216]:
+            if checkpoint_num_patches == 210:
+                checkpoint_grid_size = (21, 10)  # 21×10=210 patches
+            elif checkpoint_num_patches == 240:
+                checkpoint_grid_size = (24, 10)  # 24×10=240 patches
+            elif checkpoint_num_patches == 216:
+                checkpoint_grid_size = (24, 9)   # 24×9=216 patches
+        else:
+            # For other sizes, try to approximate proportionally
+            ratio = model_grid_size[0] / model_grid_size[1]  # height/width ratio
+            checkpoint_h = int((checkpoint_num_patches * ratio) ** 0.5)
+            checkpoint_w = checkpoint_num_patches // checkpoint_h
+            while checkpoint_h * checkpoint_w != checkpoint_num_patches:
+                checkpoint_h -= 1
+                checkpoint_w = checkpoint_num_patches // checkpoint_h
+            checkpoint_grid_size = (checkpoint_h, checkpoint_w)
+            
+        print(f"Interpolating position embeddings:")
+        print(f"  - Checkpoint grid: {checkpoint_grid_size[0]}×{checkpoint_grid_size[1]} ({checkpoint_num_patches} patches)")
+        print(f"  - Model grid: {model_grid_size[0]}×{model_grid_size[1]} ({model_num_patches} patches)")
+        
+        # Handle class token and reshape
+        cls_pos_embed = pos_embed_checkpoint[:, 0:1, :]
+        pos_embed_checkpoint = pos_embed_checkpoint[:, 1:, :]
+        
+        # Reshape into grid
+        pos_embed_checkpoint = pos_embed_checkpoint.reshape(
+            1, checkpoint_grid_size[0], checkpoint_grid_size[1], embedding_size
+        ).permute(0, 3, 1, 2)
+        
+        # Interpolate to new size
+        import torch.nn.functional as F
+        pos_embed_new = F.interpolate(
+            pos_embed_checkpoint, 
+            size=model_grid_size, 
+            mode='bicubic', 
+            align_corners=False
+        )
+        
+        # Reshape back
+        pos_embed_new = pos_embed_new.permute(0, 2, 3, 1).reshape(
+            1, model_grid_size[0] * model_grid_size[1], embedding_size
+        )
+        
+        # Attach class token
+        new_pos_embed = torch.cat((cls_pos_embed, pos_embed_new), dim=1)
+        state_dict['pos_embed'] = new_pos_embed
+        
+    return state_dict
 
 class TransReIDModel:
     def __init__(self, weights_path, device=None):
@@ -42,73 +111,46 @@ class TransReIDModel:
         ])
     
     def _load_model(self, weights_path):
-        """Load the TransReID model or create a placeholder if weights not available"""
-        # Check if weights file exists
         if not os.path.exists(weights_path):
             print(f"Warning: TransReID weights file not found at {weights_path}")
-            print("Creating a placeholder model for demonstration purposes...")
-            return self._create_placeholder_model()
-            
+            raise FileNotFoundError(f"TransReID weights file not found at {weights_path}")
+
         try:
-            # Attempt to load the state dict
             print(f"Loading TransReID weights from {weights_path}...")
-            state_dict = torch.load(weights_path, map_location=self.device)
+            model = self._create_transreid_model()
+            # Load the state dict and remove 'base.' prefix if present
+            state_dict = torch.load(weights_path, map_location='cpu')
+            if 'model' in state_dict:
+                state_dict = state_dict['model']
             
-            # Analyze the state dict to determine model architecture
-            if isinstance(state_dict, dict):
-                # If it's a dict with 'state_dict' key, it's likely a checkpoint
-                if 'state_dict' in state_dict:
-                    state_dict = state_dict['state_dict']
-                elif 'model_state_dict' in state_dict:
-                    state_dict = state_dict['model_state_dict']
-                
-                # Try to determine the model architecture from keys
-                model_keys = list(state_dict.keys())
-                if len(model_keys) > 0:
-                    print(f"Model has {len(model_keys)} parameters")
-                    sample_keys = model_keys[:3]
-                    print(f"Sample keys: {sample_keys}")
-                    
-                    # Detect ViT architecture based on key patterns
-                    if any('patch_embed' in k for k in model_keys):
-                        print("Detected Vision Transformer architecture")
-                        if any('base.1.' in k for k in model_keys):
-                            self.feature_dim = 768  # ViT-base typically has 768 features
-                        elif any('large.1.' in k for k in model_keys):
-                            self.feature_dim = 1024  # ViT-large typically has 1024 features
-                    
-                    # Here we would try to load the actual TransReID model
-                    # Since we don't have the actual implementation, we'll use a placeholder
-                    print("Using a placeholder model for demonstration")
-                    return self._create_placeholder_model()
+            # Remove 'base.' prefix if present
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('base.'):
+                    new_state_dict[k[5:]] = v
+                else:
+                    new_state_dict[k] = v
             
-            # If we can't determine the structure, use a placeholder
-            print("Could not determine model structure from weights file")
-            print("Using a placeholder model for demonstration")
-            return self._create_placeholder_model()
+            # Apply position embedding interpolation
+            new_state_dict = interpolate_pos_embed_rectangular(model, new_state_dict)
             
+            # Load state dict
+            model.load_state_dict(new_state_dict, strict=False)
+            print("TransReID weights loaded successfully.")
+            return model
         except Exception as e:
             print(f"Error loading weights: {str(e)}")
-            print("Using a placeholder model for demonstration")
-            return self._create_placeholder_model()
+            raise
     
-    def _create_placeholder_model(self):
-        """Create a placeholder model that generates feature vectors"""
-        print(f"Creating placeholder model with feature dimension {self.feature_dim}")
-        model = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
-            nn.Linear(256, self.feature_dim)
+    def _create_transreid_model(self):
+        model = vit_base_patch16_224_TransReID(
+            img_size=(256, 128),   # or your dataset's image size
+            stride_size=16,
+            drop_path_rate=0.1,
+            camera=0,
+            view=0,
+            local_feature=False,
+            sie_xishu=1.5
         )
         return model
     
