@@ -268,7 +268,7 @@ def main():
         
         # 2. Process each detection
         for detection in tracked_detections:
-            if not hasattr(detection, 'track_id') or detection.track_id <= 0:
+            if not hasattr(detection, 'track_id') or detection.track_id is None or detection.track_id <= 0:
                 continue
             
             track_id = detection.track_id

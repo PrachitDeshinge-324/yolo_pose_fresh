@@ -120,6 +120,16 @@ class TransReIDModel:
             model = self._create_transreid_model()
             # Load the state dict and remove 'base.' prefix if present
             state_dict = torch.load(weights_path, map_location='cpu')
+            # Add to utils/transreid_model.py after model loading
+            model_params = sum(p.numel() for p in model.parameters())
+            print(f"TransReID model has {model_params:,} parameters")
+
+            # Print model structure
+            print("TransReID Model Architecture:")
+            print(model.__class__.__name__)
+            for name, module in model.named_children():
+                print(f"  - {name}: {module.__class__.__name__}")
+            
             if 'model' in state_dict:
                 state_dict = state_dict['model']
             
