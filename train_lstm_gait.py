@@ -1006,7 +1006,7 @@ class GaitTrainer:
 def main():
     parser = argparse.ArgumentParser(description='Train Enhanced Bidirectional LSTM for Gait Recognition')
     parser.add_argument('--data', type=str, required=True, help='Path to CSV file with gait features')
-    parser.add_argument('--output_dir', type=str, default='enhanced_lstm_results', help='Output directory')
+    parser.add_argument('--output_dir', type=str, default='lstm_results', help='Output directory')
     parser.add_argument('--sequence_length', type=int, default=20, help='Length of input sequences')
     parser.add_argument('--step_size', type=int, default=5, help='Step size for sliding window')
     parser.add_argument('--hidden_size', type=int, default=64, help='LSTM hidden size')

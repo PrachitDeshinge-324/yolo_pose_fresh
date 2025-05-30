@@ -13,14 +13,14 @@ import numpy as np
 import logging
 from utils.trackers import YOLOTracker, Detection
 from utils.transreid_model import TransReIDModel, load_transreid_model
-
+from train_lstm_gait import get_best_device
 # Suppress Ultralytics YOLO logging
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
 class TransReIDTracker:
     """TransReID-based person tracker with robust re-identification"""
     
-    def __init__(self, device='cpu', reid_model_path='weights/vit_small_cfs_lup.pth', 
+    def __init__(self, device=get_best_device(), reid_model_path='weights/vit_small_cfs_lup.pth', 
                  iou_threshold=0.5, conf_threshold=0.5, max_age=30):
         self.device = device
         self.iou_threshold = iou_threshold

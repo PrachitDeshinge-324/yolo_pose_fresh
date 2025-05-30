@@ -24,7 +24,7 @@ from utils.opengait import OpenGaitEmbedder
 class SilhouetteExtractor:
     """YOLO11-based silhouette extraction for OpenGait features"""
     
-    def __init__(self, model_path="yolo11n-seg.pt", device="cpu"):
+    def __init__(self, model_path="yolo11n-seg.pt", device="cuda"):
         """
         Initialize YOLO11 segmentation model for silhouette extraction
         
@@ -177,7 +177,7 @@ def parse_args():
                        help="Run interactive ID merging after processing")
     
     # Display options
-    parser.add_argument("--display", action="store_true", default=True,
+    parser.add_argument("--display", action="store_true", default=False,
                        help="Display video during processing")
     parser.add_argument("--save_video", action="store_true", default=True,
                        help="Save processed video with visualizations")
@@ -185,34 +185,52 @@ def parse_args():
     return parser.parse_args()
 
 def get_device_config():
-    """Configure devices for optimal performance"""
-    if torch.cuda.is_available():
-        device = 'cuda'
-        pose_device = 'cuda'
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        device = 'mps'
-        pose_device = 'cpu'  # MPS might not support pose detection well
-    else:
-        device = 'cpu'
-        pose_device = 'cpu'
+    """Configure devices for optimal performance per model type"""
+    devices = {}
     
-    print(f"Using device: {device}, Pose device: {pose_device}")
-    return device, pose_device
+    # Check available hardware
+    cuda_available = torch.cuda.is_available()
+    mps_available = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    
+    # Default device (general processing)
+    if cuda_available:
+        devices['default'] = 'cuda'
+        print("🔥 CUDA GPU detected - using CUDA for all models")
+    elif mps_available:
+        devices['default'] = 'mps'
+        print("🍎 Apple Silicon detected - using MPS for all models")
+    else:
+        devices['default'] = 'cpu'
+        print("💻 No GPU detected - using CPU for all models")
+    
+    # Use GPU for ALL models when available (no CPU fallbacks)
+    devices['detection'] = devices['default']      # YOLO detection
+    devices['pose'] = devices['default']           # 🔧 FIXED: Now uses GPU for pose
+    devices['reid'] = devices['default']           # TransReID person re-identification  
+    devices['segmentation'] = devices['default']   # YOLO segmentation
+    devices['opengait'] = devices['default']       # OpenGait embeddings
+    
+    print(f"🚀 Device configuration (ALL models on GPU when available):")
+    for model_type, device in devices.items():
+        if model_type != 'default':
+            print(f"   - {model_type.capitalize()}: {device}")
+        
+    return devices
 
 def main():
     """Enhanced main processing pipeline with OpenGait silhouette features"""
     args = parse_args()
     
     # Setup devices
-    device, pose_device = get_device_config()
+    devices = get_device_config()
     
     # Initialize modular components
     print("Initializing components...")
     
     # 1. Detection and Tracking
     detector_tracker = DetectionTracker(
-        device=device,
-        pose_device=pose_device,
+        device=devices['detection'],
+        pose_device=devices['pose'],
         use_transreid=args.use_transreid,
         transreid_model=args.transreid_model,
         tracking_iou=args.tracking_iou,
@@ -222,7 +240,7 @@ def main():
     # 2. Pose Analysis (with feature computation per frame)
     pose_analyzer = PoseAnalyzer(
         model_pose=detector_tracker.model_pose,
-        pose_device=pose_device,
+        pose_device=devices['pose'],
         history_length=5
     )
     
@@ -230,14 +248,14 @@ def main():
     print("Loading YOLO11 segmentation model...")
     silhouette_extractor = SilhouetteExtractor(
         model_path=args.yolo_model,
-        device=device
+        device=devices['segmentation']
     )
     
     # 4. OpenGait Embedder
     print("Loading OpenGait embedder...")
     opengait_embedder = OpenGaitEmbedder(
         weights_path=args.opengait_weights,
-        device=device
+        device=devices['opengait']
     )
     
     # 5. Data Processing (enhanced for silhouette features)
@@ -470,6 +488,9 @@ def main():
     
     if merged_ids:
         print(f"- ID merges applied: {len(merged_ids)}")
+        
+    print(f"\n🎉 Enhanced gait analysis with GPU optimization complete!")
+    print(f"📈 All models successfully utilized {devices['default'].upper()} for maximum performance!")
 
 if __name__ == "__main__":
     main()

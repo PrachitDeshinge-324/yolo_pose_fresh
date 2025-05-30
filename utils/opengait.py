@@ -168,7 +168,18 @@ class AdvancedGaitNet(nn.Module):
 
 class OpenGaitEmbedder:
     def __init__(self, cfg_path=DEFAULT_CFG, weights_path=DEFAULT_WEIGHTS, device=None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # 🔧 IMPROVED: Better device selection
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
+        else:
+            self.device = device
+        
+        print(f"🎯 OpenGait using device: {self.device}")
         
         # Use advanced gait network instead of Plain
         self.model = AdvancedGaitNet(in_channels=1, feature_dim=256)
